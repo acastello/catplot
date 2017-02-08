@@ -11,6 +11,7 @@ import Data.List
 import System.Console.Terminal.Size
 import System.Console.Terminfo
 
+import Text.Read (readMaybe)
 
 data Term = Term
     { mv    :: Int -> Int -> RT ()
@@ -47,17 +48,18 @@ mainLoop :: [Double] -> RT [Double]
 mainLoop zs = do
     t <- ask
     (h,w) <- dims t
-    drawComplete (h-1) (w-1) (take (w-3) zs)
-    z <- read <$> liftIO getLine
+    drawComplete (h-1) (w-1) (take (w-3) $ adjust (h-3) zs)
+    z <- maybe 0 id <$> readMaybe <$> liftIO getLine
+    clearList (h-2) 1 $ (take (w-3) $ adjust (h-3) zs)
     mainLoop (zs++[z])
 
-drawComplete :: Int -> Int -> [Double] -> RT ()
+drawComplete :: Int -> Int -> [Int] -> RT ()
 drawComplete y x zs = do
     t <- ask
     forM_ [0..y] (clear t)
-    drawLines 0 0 y x
-    drawBox 0 0 y x
-    drawList (y-1) 1 $ adjust (y-2) zs
+    -- drawLines 0 1 y (x-1)
+    -- drawBox 0 0 y x
+    drawList (y-1) 1 $ zs
 
 adjust :: Int -> [Double] -> [Int]
 adjust n xs = fmap (round . (* (fromIntegral n/range)) . (subtract min)) xs where
@@ -72,6 +74,14 @@ drawList y x zs = do
     let f j n = when (n >= 0) $ do
         (mv t) (y-n) j
         pc 'x'
+    sequence_ $ zipWith f [x..] zs
+
+clearList :: Int -> Int -> [Int] -> RT ()
+clearList y x zs = do
+    t <- ask
+    let f j n = when (n >= 0) $ do
+        (mv t) (y-n) j
+        pc ' '
     sequence_ $ zipWith f [x..] zs
 
 drawBox :: Int -> Int -> Int -> Int -> RT ()
