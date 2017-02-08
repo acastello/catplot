@@ -18,6 +18,7 @@ data Term = Term
     , bold  :: RT ()
     , dim   :: RT ()
     , reset :: RT ()
+    , clear :: Int -> RT ()
     }
 
 type RT = ReaderT Term IO
@@ -25,7 +26,7 @@ type RT = ReaderT Term IO
 pc :: Char -> RT ()
 pc = liftIO . putChar
 
-runRT :: RT () -> IO ()
+runRT :: RT a -> IO a
 runRT op = do
     term <- setupTermFromEnv
     let cap c = maybe undefined (liftIO . runTermOutput term) (getCapability term c)
@@ -35,20 +36,42 @@ runRT op = do
         act output y x = liftIO $ runTermOutput term (output (Point y x))
         mv = maybe (error "moving the cursor is not supported in this terminal") 
                 act (getCapability term cursorAddress)
-    runReaderT op (Term mv dims (cap boldOn) (cap dimOn) (cap allAttributesOff)) where
+        clear n = mv n 0 >> cap clearEOL
+    runReaderT op (Term mv dims (cap boldOn) (cap dimOn) (cap allAttributesOff)
+        clear) where
 
-drawComplete :: Int -> Int -> [Int] -> RT ()
+main :: IO ()
+main = void $ runRT (mainLoop [])
+
+mainLoop :: [Double] -> RT [Double]
+mainLoop zs = do
+    t <- ask
+    (h,w) <- dims t
+    drawComplete (h-1) (w-1) (take (w-3) zs)
+    z <- read <$> liftIO getLine
+    mainLoop (zs++[z])
+
+drawComplete :: Int -> Int -> [Double] -> RT ()
 drawComplete y x zs = do
+    t <- ask
+    forM_ [0..y] (clear t)
     drawLines 0 0 y x
     drawBox 0 0 y x
-    drawList (y-1) (x+1) zs
+    drawList (y-1) 1 $ adjust (y-2) zs
+
+adjust :: Int -> [Double] -> [Int]
+adjust n xs = fmap (round . (* (fromIntegral n/range)) . (subtract min)) xs where
+    mean = sum xs / fromIntegral (length xs)
+    mdev = maximum $ abs <$> (subtract mean) <$> xs
+    min = mean - mdev
+    range = 2*mdev
 
 drawList :: Int -> Int -> [Int] -> RT ()
 drawList y x zs = do
     t <- ask
-    let f j n = do
+    let f j n = when (n >= 0) $ do
         (mv t) (y-n) j
-        pc '∙'
+        pc 'x'
     sequence_ $ zipWith f [x..] zs
 
 drawBox :: Int -> Int -> Int -> Int -> RT ()
