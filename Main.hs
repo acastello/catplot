@@ -48,10 +48,10 @@ mainLoop :: [Double] -> RT [Double]
 mainLoop zs = do
     t <- ask
     (h,w) <- dims t
-    drawComplete (h-1) (w-1) (take (w-3) $ adjust (h-3) zs)
-    z <- maybe 0 id <$> readMaybe <$> liftIO getLine
-    clearList (h-2) 1 $ (take (w-3) $ adjust (h-3) zs)
-    mainLoop (zs++[z])
+    drawComplete (h-1) (w-1) (reverse $ adjust (h-3) $ take (w-3) zs)
+    z <- maybe 0 log <$> readMaybe <$> liftIO getLine
+    clearList (h-2) 1 $ (reverse $ adjust (h-3) $ take (w-3) zs)
+    mainLoop (z:zs)
 
 drawComplete :: Int -> Int -> [Int] -> RT ()
 drawComplete y x zs = do
