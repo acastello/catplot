@@ -43,22 +43,20 @@ updateRT = do
     put e { eheight = h, ewidth = w }
 
 
-margins :: RT (Integer, Integer, Integer, Integer)
+margins :: RT (Integer, Integer, Integer)
 margins = do
     e <- get
-    let bord = if eborder e then 1 else 0
-        up = bord + (if null $ etitle e then 0 else 1)
-        dow = bord + (if null $ efoot e then 0 else 1)
-        lef = bord + (if eref e then 5 else 0)
-        rig = bord
-    return (up,dow,lef,rig)
+    let up = (if null $ etitle e then 0 else 1)
+        dow = (if null $ efoot e then 0 else 1)
+        lef = (if eref e then 5 else 0)
+    return (up,dow,lef)
 
 adjustWin :: Window -> RT ()
 adjustWin win = do
     e @ Env { eheight = h, ewidth = w } <- get
-    (u,d,l,r) <- margins
+    (u,d,l) <- margins
     lift $ updateWindow win $ do
-        resizeWindow (h-u-d) (w-l-r)
+        resizeWindow (h-u-d) (w-l)
         moveWindow u l
         clearLines [0..h-u-d-1]
         when (eborder e) $ drawBox Nothing Nothing
