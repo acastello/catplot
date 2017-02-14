@@ -3,6 +3,7 @@
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans
 import Control.Monad.Trans.State
 
 import Data.List 
@@ -13,6 +14,54 @@ import Text.Read (readMaybe)
 import UI.NCurses
 
 data Env = Env
+  { eheight   :: Integer
+  , ewidth    :: Integer
+  , ecenter   :: Double
+  , etitle    :: String
+  , efoot     :: String
+  , ehoriz    :: Bool
+  , eborder   :: Bool
+  , eref      :: Bool
+  , escalef   :: ScaleF
+  , edata     :: [Double]
+  } 
+
+defaultEnv :: Env
+defaultEnv = Env 0 0 0 "" "" False False False id []
+
+type ScaleF = Double -> Double
+
+type RT = StateT Env Curses
+
+ln :: ScaleF
+ln = log
+
+updateRT :: RT ()
+updateRT = do
+    e <- get
+    (h,w) <- lift screenSize
+    put e { eheight = h, ewidth = w }
+
+
+margins :: RT (Integer, Integer, Integer, Integer)
+margins = do
+    e <- get
+    let bord = if eborder e then 1 else 0
+        up = bord + (if null $ etitle e then 0 else 1)
+        dow = bord + (if null $ efoot e then 0 else 1)
+        lef = bord + (if eref e then 5 else 0)
+        rig = bord
+    return (up,dow,lef,rig)
+
+adjustWin :: Window -> RT ()
+adjustWin win = do
+    e @ Env { eheight = h, ewidth = w } <- get
+    (u,d,l,r) <- margins
+    lift $ updateWindow win $ do
+        resizeWindow (h-u-d) (w-l-r)
+        moveWindow u l
+        clearLines [0..h-u-d-1]
+        when (eborder e) $ drawBox Nothing Nothing
 
 drawComplete :: Window -> [Integer] -> Curses ()
 drawComplete w xs = do
@@ -141,3 +190,8 @@ write' str = runCurses $ do
         either (mapM_ drawGlyph) drawString str
     render
     void $ getEvent dft Nothing
+
+ff :: Double -> String
+ff d
+  | abs d >= 10000 = printf "%5e" d
+  | otherwise = printf "%d" d
