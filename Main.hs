@@ -28,18 +28,20 @@ data Env = Env
   } 
 
 defaultEnv :: Env
-defaultEnv = Env 0 0 0 0 "" "" False False False NoScale []
+defaultEnv = Env 0 0 0 1 "" "" False False False NoScale []
 
 data ScaleF = NoScale | LogScale
 
 type RT = StateT Env Curses
 
+runRT :: RT a -> IO a
+runRT op = runCurses $ evalStateT op defaultEnv 
+
 updateRT :: RT ()
 updateRT = do
     e <- get
     (h,w) <- lift screenSize
-    put e { eheight = h, ewidth = w }
-
+    put e { eheight = h, ewidth = w } 
 
 margins :: RT (Integer, Integer, Integer)
 margins = do
@@ -77,34 +79,59 @@ adjustData y h w = do
     let takes = take (fromIntegral w `quot` 2) (edata e)
         f x = x * fromIntegral h / emult e - emin e
     put e { edata = takes }
-    return $ (y + h -) . round . f <$> takes
+    return $ reverse $ (y + h -) . round . f <$> takes
 
-adjustWin :: Window -> RT ()
+adjustWin :: Window -> RT [Integer]
 adjustWin win = do
     e @ Env { eheight = h, ewidth = w } <- get
     (u,d,l) <- margins
     let b = if eborder e then 1 else 0
         h' = h-u-d
         w' = w-l
-    takes <- adjustData b (h - 2*b - 1) (w - 2*b-1)
     lift $ updateWindow win $ do
-        resizeWindow w' h'
+        resizeWindow h' w'
         moveWindow u l
-        clearLines [0..w'-1]
+        clearLines [0..h'-1]
         when (eborder e) $ drawBox Nothing Nothing
+    adjustData b (h - 2*b - 1) (w - 2*b-1)
 
 drawGraph :: Window -> [Integer] -> RT ()
 drawGraph win dat = do
     e <- get
+    liftIO $ do
+        print dat
+        threadDelay 1000000
     let b = if eborder e then 1 else 0
         f y0 (x,y1) = (Just y1, do
             forM_ y0 $ \y -> drawPilon y y1 (x-1)
             moveCursor y1 x
-            drawGlyph glyphBlock)
-    lift $ updateWindow win $ sequence_ $ snd
-          $ mapAccumL f Nothing $ zip [b,b+2..] dat
+            drawGlyph glyphBlock
+            )
+    lift $ do
+        updateWindow win $ sequence_ $ snd $ mapAccumL f Nothing $ zip [b,b+2..] dat
+        render
 
-main = runCurses $ do
+drawComplete :: Window -> RT ()
+drawComplete win = do
+    updateRT
+    dat <- adjustWin win
+    drawGraph win dat
+
+getDouble :: RT ()
+getDouble = do
+    maybed <- readMaybe <$> liftIO getLine
+    case maybed of 
+        Nothing -> getDouble
+        Just d -> do
+            modify (\e -> e { edata = d : edata e })
+
+main = runRT $ do
+    win <- lift $ newWindow 1 1 0 0
+    forever $ do
+        getDouble
+        drawComplete win
+
+main' = runCurses $ do
     setCursorMode CursorInvisible
     setEcho False
     dft <- defaultWindow
