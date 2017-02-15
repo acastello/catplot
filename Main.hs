@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, CPP #-}
 
 import Control.Concurrent
 import Control.Monad
@@ -16,7 +16,8 @@ import UI.NCurses
 data Env = Env
   { eheight   :: Integer
   , ewidth    :: Integer
-  , ecenter   :: Double
+  , emin      :: Double
+  , emult     :: Double
   , etitle    :: String
   , efoot     :: String
   , ehoriz    :: Bool
@@ -27,14 +28,11 @@ data Env = Env
   } 
 
 defaultEnv :: Env
-defaultEnv = Env 0 0 0 "" "" False False False id []
+defaultEnv = Env 0 0 0 0 "" "" False False False NoScale []
 
-type ScaleF = Double -> Double
+data ScaleF = NoScale | LogScale
 
 type RT = StateT Env Curses
-
-ln :: ScaleF
-ln = log
 
 updateRT :: RT ()
 updateRT = do
@@ -46,24 +44,65 @@ updateRT = do
 margins :: RT (Integer, Integer, Integer)
 margins = do
     e <- get
-    let up = (if null $ etitle e then 0 else 1)
-        dow = (if null $ efoot e then 0 else 1)
-        lef = (if eref e then 5 else 0)
+    let up = if null $ etitle e then 0 else 1
+        dow = if null $ efoot e then 0 else 1
+        lef = if eref e then 5 else 0
     return (up,dow,lef)
+
+adjustScale :: Integer -> Stats -> RT ()
+adjustScale h' s = do
+    e @ Env { emin = mi, emult = mu' } <- get
+    let h = fromIntegral h'
+        mu = mu' * h
+        ltres = mi + 0.2*mu
+        utres = mi + 0.8*mu
+        iltres = mi + 0.4*mu
+        iutres = mi + 0.6*mu 
+    if or [s_min s < mi, s_max s > mi+mu ,s_q1 s < ltres, s_q4 s > utres] then do
+        let r = s_max s - s_min s
+            f = 0.2
+            mi = s_min s - f * r
+            mu = r * (1 + 2*f) / h
+        put e { emin = mi, emult = mu }
+    -- TODO: fix unscattered samples
+    else if or [] then do
+        return ()
+    else do
+        return ()
+    return ()
+
+adjustData :: Integer -> Integer -> Integer -> RT [Integer]
+adjustData y h w = do
+    e <- get
+    let takes = take (fromIntegral w `quot` 2) (edata e)
+        f x = x * fromIntegral h / emult e - emin e
+    put e { edata = takes }
+    return $ (y + h -) . round . f <$> takes
 
 adjustWin :: Window -> RT ()
 adjustWin win = do
     e @ Env { eheight = h, ewidth = w } <- get
     (u,d,l) <- margins
+    let b = if eborder e then 1 else 0
+        h' = h-u-d
+        w' = w-l
+    takes <- adjustData b (h - 2*b - 1) (w - 2*b-1)
     lift $ updateWindow win $ do
-        resizeWindow (h-u-d) (w-l)
+        resizeWindow w' h'
         moveWindow u l
-        clearLines [0..h-u-d-1]
+        clearLines [0..w'-1]
         when (eborder e) $ drawBox Nothing Nothing
 
-drawComplete :: Window -> [Integer] -> Curses ()
-drawComplete w xs = do
-    undefined
+drawGraph :: Window -> [Integer] -> RT ()
+drawGraph win dat = do
+    e <- get
+    let b = if eborder e then 1 else 0
+        f y0 (x,y1) = (Just y1, do
+            forM_ y0 $ \y -> drawPilon y y1 (x-1)
+            moveCursor y1 x
+            drawGlyph glyphBlock)
+    lift $ updateWindow win $ sequence_ $ snd
+          $ mapAccumL f Nothing $ zip [b,b+2..] dat
 
 main = runCurses $ do
     setCursorMode CursorInvisible
@@ -109,6 +148,13 @@ drawer = do
             moveCursor y1 x
             drawGlyph glyphBlock)
 
+draw :: Window -> Integer -> [Integer] -> Curses ()
+draw win x dat = updateWindow win $ sequence_ $ snd 
+                 $ mapAccumL f Nothing $ zip [x,x+2..] dat where
+    f y0 (x,y1) = (Just y1, do
+        forM_ y0 $ \y -> drawPilon y y1 (x-1)
+        moveCursor y1 x
+        drawGlyph glyphBlock)
 
 drawPilon y0 y1 x =
     if y0 == y1 then do
