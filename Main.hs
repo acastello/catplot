@@ -1,12 +1,15 @@
 {-# LANGUAGE OverloadedStrings, CPP #-}
 
 import Control.Concurrent
+import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans
 import Control.Monad.Trans.State
 
 import Data.List 
+
+import System.Posix
 
 import Text.Printf
 import Text.Read (readMaybe)
@@ -25,17 +28,27 @@ data Env = Env
   , eref      :: Bool
   , escalef   :: ScaleF
   , edata     :: [Double]
+  , eframe    :: Window
+  , egraph    :: Window
+  , estdin    :: Fd
   } 
 
 defaultEnv :: Env
-defaultEnv = Env 0 0 0 1 "" "" False False False NoScale []
+defaultEnv = Env 0 0 0 1 "" "" True True True NoScale [] undefined undefined 0
 
 data ScaleF = NoScale | LogScale
 
 type RT = StateT Env Curses
 
 runRT :: RT a -> IO a
-runRT op = runCurses $ evalStateT op defaultEnv 
+runRT op = runCurses $ do
+    setCursorMode CursorInvisible
+    setEcho False
+    win <- newWindow 1 1 0 0
+    swin <- subWindow win 1 1 0 0
+    fd <- liftIO $ dup 0
+    evalStateT (updateRT >> adjustWin >> op) 
+        defaultEnv { eframe = win, egraph = swin, estdin = fd }
 
 updateRT :: RT ()
 updateRT = do
@@ -61,6 +74,7 @@ adjustScale h' s = do
         iltres = mi + 0.4*mu
         iutres = mi + 0.6*mu 
     if or [s_min s < mi, s_max s > mi+mu ,s_q1 s < ltres, s_q4 s > utres] then do
+        -- liftIO $ putStrLn "expanding"
         let r = s_max s - s_min s
             f = 0.2
             mi = s_min s - f * r
@@ -68,39 +82,55 @@ adjustScale h' s = do
         put e { emin = mi, emult = mu }
     -- TODO: fix unscattered samples
     else if or [] then do
+        -- liftIO $ putStrLn $ "shrinking"
         return ()
     else do
+        -- liftIO $ putStrLn $ "nuffin"
         return ()
     return ()
 
-adjustData :: Integer -> Integer -> Integer -> RT [Integer]
-adjustData y h w = do
+adjustData :: Integer -> Integer -> RT [Integer]
+adjustData h w = do
     e <- get
     let takes = take (fromIntegral w `quot` 2) (edata e)
-        f x = x * fromIntegral h / emult e - emin e
+        f x = (x - emin e) / emult e 
     put e { edata = takes }
-    return $ reverse $ (y + h -) . round . f <$> takes
+    return $ reverse $ (h -) . round . f <$> takes
 
-adjustWin :: Window -> RT [Integer]
-adjustWin win = do
+adjustWin :: RT [Integer]
+adjustWin = do
     e @ Env { eheight = h, ewidth = w } <- get
     (u,d,l) <- margins
     let b = if eborder e then 1 else 0
-        h' = h-u-d
-        w' = w-l
-    lift $ updateWindow win $ do
-        resizeWindow h' w'
-        moveWindow u l
-        clearLines [0..h'-1]
-        when (eborder e) $ drawBox Nothing Nothing
-    adjustData b (h - 2*b - 1) (w - 2*b-1)
+        winx = u
+        winy = l
+        winh = h - u - d
+        winw = w - l
+        subx = u + b
+        suby = l + b
+        subh = winh - b
+        subw = winw - b
+    doresize <- lift $ updateWindow (eframe e) $ do
+        (oldh, oldw) <- windowSize
+        if oldh /= winh || oldw /= winw then do
+            resizeWindow winh winw
+            moveWindow winx winy
+            when (eborder e) $ drawBox Nothing Nothing
+            return True
+        else
+            return False
+    lift $ updateWindow (egraph e) $ do
+        when doresize $ do
+            resizeWindow (winh - 2*b) (winw - 2*b)
+            moveWindow (u+b) (l+b)
+        clearLines [0..winh -2*b-1]
 
-drawGraph :: Window -> [Integer] -> RT ()
-drawGraph win dat = do
+    adjustScale (subh - 2) (statLimits $ edata e)
+    adjustData (subh - 2) (subw - 2)
+
+drawGraph :: [Integer] -> RT ()
+drawGraph dat = do
     e <- get
-    liftIO $ do
-        print dat
-        threadDelay 1000000
     let b = if eborder e then 1 else 0
         f y0 (x,y1) = (Just y1, do
             forM_ y0 $ \y -> drawPilon y y1 (x-1)
@@ -108,28 +138,32 @@ drawGraph win dat = do
             drawGlyph glyphBlock
             )
     lift $ do
-        updateWindow win $ sequence_ $ snd $ mapAccumL f Nothing $ zip [b,b+2..] dat
+        updateWindow (egraph e) $ sequence_ $ snd $ mapAccumL f Nothing $ zip [b,b+2..] dat
         render
 
-drawComplete :: Window -> RT ()
-drawComplete win = do
+drawComplete :: RT ()
+drawComplete = do
     updateRT
-    dat <- adjustWin win
-    drawGraph win dat
+    dat <- adjustWin 
+    drawGraph dat
 
 getDouble :: RT ()
 getDouble = do
-    maybed <- readMaybe <$> liftIO getLine
+    maybed <- readMaybe <$> getLine'
     case maybed of 
         Nothing -> getDouble
         Just d -> do
             modify (\e -> e { edata = d : edata e })
 
-main = runRT $ do
-    win <- lift $ newWindow 1 1 0 0
-    forever $ do
-        getDouble
-        drawComplete win
+test xs = runRT $ do
+    e <- get
+    put e { edata = xs }
+    updateRT 
+    adjustWin 
+
+main = runRT $ forever $ do
+    getDouble
+    drawComplete 
 
 main' = runCurses $ do
     setCursorMode CursorInvisible
@@ -238,6 +272,7 @@ adjf s h = ( \d -> round $ (d-mi) * fromIntegral h / r
 --     mi = ll
 
 statLimits :: [Double] -> Stats
+statLimits [] = Stats 0 1 0 0 0 0 0 0 
 statLimits xs = Stats mi ma q1 q2 q3 q4 me md where
     l = length xs - 1
     me = (sum xs) / fromIntegral l
@@ -266,3 +301,23 @@ ff :: Double -> String
 ff d
   | abs d >= 10000 = printf "%5e" d
   | otherwise = printf "%d" d
+
+getLine' :: RT String
+getLine' = do
+    r <- liftIO $ tryIO getLine
+    either f return r where
+        f _ = do
+            e @ Env { eframe = win } <- get
+            lift $ do
+                updateWindow win $ do
+                    (h,w) <- windowSize
+                    let msg = "clossing in 1 second"
+                    moveCursor (h `quot` 2) 
+                               ((w - (fromIntegral $ length msg)) `quot` 2)
+                    drawString msg
+                render
+            liftIO $ threadDelay 1000000
+            mzero
+
+tryIO :: IO a -> IO (Either IOException a)
+tryIO = try 
