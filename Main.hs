@@ -30,13 +30,26 @@ data Env = Env
   , edata     :: [Double]
   , eframe    :: Window
   , egraph    :: Window
-  , estdin    :: Fd
+  , pointch   :: Glyph
+  , lineattrs :: [Attribute]
+  , horizch   :: Glyph
   } 
 
 defaultEnv :: Env
-defaultEnv = Env 0 0 0 1 "" "" True True True NoScale [] undefined undefined 0
+defaultEnv = Env 0 0 0 1 "" "" True True True NoScale [] undefined undefined
+                  (Glyph '\9724' [])
+                  []
+                  glyphLineH { glyphAttributes = [AttributeDim] }
 
 data ScaleF = NoScale | LogScale
+
+adj :: ScaleF -> Double -> Double
+adj NoScale = id
+adj LogScale = logBase 10
+
+rev :: ScaleF -> Double -> Double
+rev NoScale = id
+rev LogScale = (10**)
 
 type RT = StateT Env Curses
 
@@ -48,7 +61,7 @@ runRT op = runCurses $ do
     swin <- subWindow win 1 1 0 0
     fd <- liftIO $ dup 0
     evalStateT (updateRT >> adjustWin >> op) 
-        defaultEnv { eframe = win, egraph = swin, estdin = fd }
+        defaultEnv { eframe = win, egraph = swin }
 
 updateRT :: RT ()
 updateRT = do
@@ -61,7 +74,7 @@ margins = do
     e <- get
     let up = if null $ etitle e then 0 else 1
         dow = if null $ efoot e then 0 else 1
-        lef = if eref e then 5 else 0
+        lef = if eref e then 8 else 0
     return (up,dow,lef)
 
 adjustScale :: Integer -> Stats -> RT ()
@@ -108,8 +121,11 @@ adjustWin = do
         winw = w - l
         subx = u + b
         suby = l + b
-        subh = winh - b
-        subw = winw - b
+        subh = winh - 2*b
+        subw = winw - 2*b
+
+    when (eref e) $ drawRef (subh-1) suby
+
     doresize <- lift $ updateWindow (eframe e) $ do
         (oldh, oldw) <- windowSize
         if oldh /= winh || oldw /= winw then do
@@ -121,21 +137,38 @@ adjustWin = do
             return False
     lift $ updateWindow (egraph e) $ do
         when doresize $ do
-            resizeWindow (winh - 2*b) (winw - 2*b)
+            resizeWindow subh subw
             moveWindow (u+b) (l+b)
-        clearLines [0..winh -2*b-1]
+        clearLines [0..subh-1]
+
+    when (ehoriz e) $ drawHorizontal (subh-1) (subw-1)
 
     adjustScale (subh - 2) (statLimits $ edata e)
     adjustData (subh - 2) (subw - 2)
+
+drawRef :: Integer -> Integer -> RT ()
+drawRef h y = do
+    e <- get
+    let ys = filter (\y' -> (h-y') `mod` 4 == 0) [y..h]
+    lift $ updateWindow (eframe e) $ forM_ ys $ \y -> do
+        moveCursor 
+
+drawHorizontal :: Integer -> Integer -> RT ()
+drawHorizontal h w = do
+    e <- get
+    let ys = filter (\y -> (h-y) `mod` 4 == 0) [0..h]
+    lift $ updateWindow (egraph e) $ forM_ ys $ \y -> do
+        moveCursor y 0
+        drawLineH (Just glyphLineH { glyphAttributes = [AttributeDim] }) w
 
 drawGraph :: [Integer] -> RT ()
 drawGraph dat = do
     e <- get
     let b = if eborder e then 1 else 0
         f y0 (x,y1) = (Just y1, do
-            forM_ y0 $ \y -> drawPilon y y1 (x-1)
+            forM_ y0 $ \y -> drawPilon y y1 (x-1) (lineattrs e)
             moveCursor y1 x
-            drawGlyph glyphBlock
+            drawGlyph (pointch e)
             )
     lift $ do
         updateWindow (egraph e) $ sequence_ $ snd $ mapAccumL f Nothing $ zip [b,b+2..] dat
@@ -165,78 +198,26 @@ main = runRT $ forever $ do
     getDouble
     drawComplete 
 
-main' = runCurses $ do
-    setCursorMode CursorInvisible
-    setEcho False
-    dft <- defaultWindow
-    draw <- drawer
-    let read' = do
-        d <- readMaybe <$> liftIO getLine
-        case d of 
-            Nothing -> read'
-            Just x -> return x
-    let f xs = do
-        when (xs /= []) $
-            draw xs
-        x <- log <$> read'
-        f (x:xs)
-    f []
-
-
-drawer :: Curses ([Double] -> Curses ())
-drawer = do
-    win <- newWindow 1 1 0 0
-    return $ \xs -> do
-        (h,w) <- screenSize
-        updateWindow win $ do
-            let upad = 1
-                lpad = 7
-                rpad = 0
-            resizeWindow (h-upad) (w-lpad-rpad)
-            clearLines [0..h-upad-1]
-            moveWindow upad lpad
-            drawBox Nothing Nothing
-            let h' = h - upad - 2
-                n = fromIntegral $ w - lpad - rpad - 2
-                ys = reverse $ take (n`quot`2) xs
-                (f1,_) = adjf (statLimits ys) h'
-            draw' h' (f1 <$> ys)
-        render
-  where
-        draw' n xs = sequence $ snd $ mapAccumL f Nothing $ zip [1,3..] ((n -) <$> xs)
-        f y0 (x,y1) = (Just y1, do
-            forM_ y0 $ \y -> drawPilon y y1 (x-1)
-            moveCursor y1 x
-            drawGlyph glyphBlock)
-
-draw :: Window -> Integer -> [Integer] -> Curses ()
-draw win x dat = updateWindow win $ sequence_ $ snd 
-                 $ mapAccumL f Nothing $ zip [x,x+2..] dat where
-    f y0 (x,y1) = (Just y1, do
-        forM_ y0 $ \y -> drawPilon y y1 (x-1)
-        moveCursor y1 x
-        drawGlyph glyphBlock)
-
-drawPilon y0 y1 x =
+drawPilon y0 y1 x as =
     if y0 == y1 then do
         moveCursor y0 x 
-        drawGlyph glyphLineH
+        drawGlyph glyphLineH { glyphAttributes = as }
     else if y0 > y1 then do
         moveCursor y0 x
-        drawGlyph glyphCornerLR
+        drawGlyph glyphCornerLR { glyphAttributes = as }
         forM_ [y1+1..y0-1] $ \y -> do
             moveCursor y x
-            drawGlyph glyphLineV
+            drawGlyph glyphLineV { glyphAttributes = as }
         moveCursor y1 x
-        drawGlyph glyphCornerUL
+        drawGlyph glyphCornerUL { glyphAttributes = as }
     else do
         moveCursor y0 x
-        drawGlyph glyphCornerUR
+        drawGlyph glyphCornerUR { glyphAttributes = as }
         forM_ [y0+1..y1-1] $ \y -> do
             moveCursor y x
-            drawGlyph glyphLineV
+            drawGlyph glyphLineV { glyphAttributes = as }
         moveCursor y1 x
-        drawGlyph glyphCornerLL
+        drawGlyph glyphCornerLL { glyphAttributes = as }
 
 data Stats = Stats
     { s_min   :: Double
@@ -299,8 +280,12 @@ write' str = runCurses $ do
 
 ff :: Double -> String
 ff d
-  | abs d >= 10000 = printf "%5e" d
-  | otherwise = printf "%d" d
+  | abs d > 9999.9 || abs d < 0.01 = printf "% .2e" d
+  | abs d > 999.99 = printf "% .1f" d
+  | abs d > 9.999 = printf "% .2f" d
+  | abs d > 0.99 = printf "% .3f" d
+  | abs d > 0.09999 = printf "% .4f" d
+  | otherwise = printf "% .5f" d
 
 getLine' :: RT String
 getLine' = do
