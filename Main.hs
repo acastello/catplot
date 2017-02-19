@@ -36,7 +36,7 @@ data Env = Env
   } 
 
 defaultEnv :: Env
-defaultEnv = Env 0 0 0 1 "" "" True True True NoScale [] undefined undefined
+defaultEnv = Env 0 0 0 1 "" "" True True True LogScale [] undefined undefined
                   (Glyph '\9724' [])
                   []
                   glyphLineH { glyphAttributes = [AttributeDim] }
@@ -50,6 +50,11 @@ adj LogScale = logBase 10
 rev :: ScaleF -> Double -> Double
 rev NoScale = id
 rev LogScale = (10**)
+
+showrev :: Integer -> RT String
+showrev x = do
+    e <- get
+    return $ ff $ rev (escalef e) $ ((fromIntegral x)) * (emult e) + (emin e)
 
 type RT = StateT Env Curses
 
@@ -119,39 +124,56 @@ adjustWin = do
         winy = l
         winh = h - u - d
         winw = w - l
-        subx = u + b
-        suby = l + b
+        suby = u + b
+        subx = l + b
         subh = winh - 2*b
         subw = winw - 2*b
-
-    when (eref e) $ drawRef (subh-1) suby
 
     doresize <- lift $ updateWindow (eframe e) $ do
         (oldh, oldw) <- windowSize
         if oldh /= winh || oldw /= winw then do
             resizeWindow winh winw
             moveWindow winx winy
-            when (eborder e) $ drawBox Nothing Nothing
             return True
         else
             return False
-    lift $ updateWindow (egraph e) $ do
-        when doresize $ do
-            resizeWindow subh subw
-            moveWindow (u+b) (l+b)
-        clearLines [0..subh-1]
 
-    when (ehoriz e) $ drawHorizontal (subh-1) (subw-1)
+    when doresize $ lift $ updateWindow (egraph e) $ do
+        resizeWindow subh subw
+        moveWindow suby subx
+
+    let (mi,mu) = (emin e, emult e)
 
     adjustScale (subh - 2) (statLimits $ edata e)
-    adjustData (subh - 2) (subw - 2)
+    dat <- adjustData (subh - 2) (subw - 2)
+
+    e <- get
+
+    let reref = (eref e) && ((emult e /= mu) || (emin e /= mi))
+    when reref $ drawRef (subh-1) suby
+
+    when (reref || (doresize && eborder e)) $ lift $ updateWindow (eframe e) 
+            $ drawBox Nothing Nothing
+
+    lift $ updateWindow (egraph e) $ do
+        clearLines [0..subh-1]
+    when (ehoriz e) $ drawHorizontal (subh-1) (subw-1)
+
+
+    return dat
 
 drawRef :: Integer -> Integer -> RT ()
-drawRef h y = do
+drawRef h y0 = do
     e <- get
-    let ys = filter (\y' -> (h-y') `mod` 4 == 0) [y..h]
-    lift $ updateWindow (eframe e) $ forM_ ys $ \y -> do
-        moveCursor 
+    let ys = (y0+) <$> filter (\y -> (h - y) `mod` 4 == 0) [0..h]
+    -- liftIO $ print ys
+    w <- lift defaultWindow
+    forM_ ys $ \y -> do
+        str <- showrev (h + y0 - y)
+        lift $ do
+            updateWindow w $ do
+                moveCursor y 0
+                drawString str
 
 drawHorizontal :: Integer -> Integer -> RT ()
 drawHorizontal h w = do
@@ -186,7 +208,7 @@ getDouble = do
     case maybed of 
         Nothing -> getDouble
         Just d -> do
-            modify (\e -> e { edata = d : edata e })
+            modify (\e -> e { edata = adj (escalef e) d : edata e })
 
 test xs = runRT $ do
     e <- get
@@ -279,13 +301,18 @@ write' str = runCurses $ do
     void $ getEvent dft Nothing
 
 ff :: Double -> String
-ff d
-  | abs d > 9999.9 || abs d < 0.01 = printf "% .2e" d
-  | abs d > 999.99 = printf "% .1f" d
-  | abs d > 9.999 = printf "% .2f" d
-  | abs d > 0.99 = printf "% .3f" d
-  | abs d > 0.09999 = printf "% .4f" d
-  | otherwise = printf "% .5f" d
+ff d = printf "%8s" (printf f d :: String) where
+    a = abs d
+    f 
+      | a > 9999.9 || a < 0.01 = "% .2e"
+      | a > 999.99    = "% .1f"
+      | a > 9.999     = "% .2f"
+      | a > 0.99      = "% .3f"
+      | a > 0.09999   = "% .4f"
+      | otherwise     = "% .5f"
+
+flog :: Double -> String
+flog d = printf "%8s" (printf "% .2e" d :: String) 
 
 getLine' :: RT String
 getLine' = do
